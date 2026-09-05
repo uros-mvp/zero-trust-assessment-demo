@@ -1,0 +1,95 @@
+name: Zero Trust Assessment
+
+on:
+  workflow_dispatch:
+    inputs:
+      pillar:
+        description: 'Pillar to assess: All, Identity, Devices, Network, Data, Infrastructure, SecOps, AI'
+        required: false
+        default: 'All'
+        type: choice
+        options:
+          - All
+          - Identity
+          - Devices
+          - Network
+          - Data
+          - Infrastructure
+          - SecOps
+          - AI
+      days:
+        description: 'Number of days to query sign-in logs (1-30)'
+        required: false
+        default: '7'
+        type: string
+  schedule:
+    - cron: '0 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  run-zero-trust-assessment:
+    runs-on: windows-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install and import ZeroTrustAssessment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.PowerShell.PSResourceGet -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+          Import-Module Microsoft.PowerShell.PSResourceGet -Force
+          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Repository PSGallery -Quiet -ErrorAction Stop
+
+          $module = Get-Module -ListAvailable ZeroTrustAssessment | Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $module) { throw 'ZeroTrustAssessment module was not installed.' }
+
+          Import-Module $module.Path -Force -Verbose
+          Get-Command Connect-ZtAssessment -ErrorAction Stop | Format-Table Name,Source -AutoSize
+
+      - name: Run Zero Trust Assessment
+        shell: pwsh
+        env:
+          ZT_PILLAR: ${{ inputs.pillar || 'All' }}
+          ZT_DAYS: ${{ inputs.days || '7' }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_CERTIFICATE_BASE64: ${{ secrets.AZURE_CLIENT_CERTIFICATE_BASE64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
+          New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
+
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID) -or [string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID) -or [string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE_BASE64)) {
+            throw 'Missing required secrets: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_CERTIFICATE_BASE64.'
+          }
+
+          $certBytes = [System.Convert]::FromBase64String($env:AZURE_CLIENT_CERTIFICATE_BASE64)
+          $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $certBytes,
+            $null,
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
+          )
+
+          if (-not $cert.HasPrivateKey) {
+            throw 'The configured certificate does not contain a private key.'
+          }
+
+          Connect-MgGraph -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -NoWelcome
+          Connect-ZtAssessment -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -Environment Global -Service 'All'
+          Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days [int]$env:ZT_DAYS -NoBrowser -ShowLog
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zero-trust-report
+          path: ${{ github.workspace }}/ZeroTrustReport
