@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   run-zero-trust-assessment:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 180
 
     steps:
@@ -44,13 +44,13 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Install PowerShell module
-        shell: pwsh
+        shell: powershell
         run: |
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
 
       - name: Run Zero Trust Assessment
-        shell: pwsh
+        shell: powershell
         env:
           ZT_PILLAR: ${{ inputs.pillar || 'All' }}
           ZT_DAYS: ${{ inputs.days || '7' }}
