@@ -17,33 +17,58 @@ on:
           - Infrastructure
           - SecOps
           - AI
+      days:
+        description: 'Number of days to query sign-in logs (1-30)'
+        required: false
+        default: '7'
+        type: string
   schedule:
     - cron: '0 4 * * 1'
+
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   run-zero-trust-assessment:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
         with:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           allow-no-subscriptions: true
-      - name: Install module
+
+      - name: Install PowerShell module
         shell: pwsh
         run: |
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet
-      - name: Run assessment
+          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
+
+      - name: Run Zero Trust Assessment
         shell: pwsh
+        env:
+          ZT_PILLAR: ${{ inputs.pillar || 'All' }}
+          ZT_DAYS: ${{ inputs.days || '7' }}
         run: |
-          Connect-ZtAssessment -TenantId ${{ secrets.AZURE_TENANT_ID }}
-          Invoke-ZtAssessment -Path ./ZeroTrustReport -Pillar ${{ inputs.pillar || 'All' }} -NoBrowser -ShowLog
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
+          New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
+
+          Connect-ZtAssessment -TenantId ${{ secrets.AZURE_TENANT_ID }} -Environment Global -Service 'All'
+          Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days [int]$env:ZT_DAYS -NoBrowser -ShowLog
+
       - name: Upload report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: zero-trust-report
-          path: ./ZeroTrustReport
+          path: ${{ github.workspace }}/ZeroTrustReport
