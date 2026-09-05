@@ -48,8 +48,11 @@ jobs:
         run: |
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.PowerShell.PSResourceGet -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-          Import-Module Microsoft.PowerShell.PSResourceGet
+          Import-Module Microsoft.PowerShell.PSResourceGet -Force
           Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
+          $module = Get-Module -ListAvailable ZeroTrustAssessment | Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $module) { throw 'ZeroTrustAssessment module was not installed.' }
+          Import-Module $module.Path -Force -Verbose
 
       - name: Run Zero Trust Assessment
         shell: powershell
