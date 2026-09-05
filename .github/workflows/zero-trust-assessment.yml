@@ -32,33 +32,12 @@ permissions:
 jobs:
   run-zero-trust-assessment:
     name: Run Zero Trust Assessment
-    runs-on: windows-latest
+    runs-on: self-hosted
     timeout-minutes: 180
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Validate required secrets
-        shell: pwsh
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_CERTIFICATE_BASE64: ${{ secrets.AZURE_CERTIFICATE_BASE64 }}
-          AZURE_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CERTIFICATE_PASSWORD }}
-        run: |
-          foreach ($name in @(
-            'AZURE_TENANT_ID',
-            'AZURE_CLIENT_ID',
-            'AZURE_SUBSCRIPTION_ID',
-            'AZURE_CERTIFICATE_BASE64',
-            'AZURE_CERTIFICATE_PASSWORD'
-          )) {
-            if ([string]::IsNullOrWhiteSpace((Get-Item -Path "Env:$name" -ErrorAction SilentlyContinue).Value)) {
-              throw "Missing required GitHub secret or variable: $name"
-            }
-          }
 
       - name: Install PowerShell modules
         shell: pwsh
@@ -68,14 +47,38 @@ jobs:
           Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
           Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 
+      - name: Connect to tenant using the runner's logged-in context
+        shell: pwsh
+        env:
+          ZT_PILLAR: ${{ inputs.pillar || 'All' }}
+          ZT_DAYS: ${{ inputs.days || '7' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
+
+          Write-Host 'This workflow expects the self-hosted runner to already be signed in to the Microsoft 365 tenant.'
+          Write-Host 'That matches the official Microsoft Zero Trust Assessment flow: install module, connect to the tenant, then run the assessment.'
+
+          try {
+            Connect-ZtAssessment -UseTokenCache -Force
+          }
+          catch {
+            Write-Host 'The runner does not currently have a valid Microsoft 365 tenant token cache. Please sign in to the self-hosted runner session and rerun.'
+            throw
+          }
+
+          $context = Get-MgContext -ErrorAction SilentlyContinue
+          if (-not $context) {
+            throw 'No active Microsoft Graph context was found on the self-hosted runner. Please authenticate to the tenant first.'
+          }
+
+          Write-Host "Authenticated as: $($context.Account)"
+          Write-Host "Tenant: $($context.TenantId)"
+
       - name: Run Zero Trust Assessment
         shell: pwsh
         env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_CERTIFICATE_BASE64: ${{ secrets.AZURE_CERTIFICATE_BASE64 }}
-          AZURE_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CERTIFICATE_PASSWORD }}
           ZT_PILLAR: ${{ inputs.pillar || 'All' }}
           ZT_DAYS: ${{ inputs.days || '7' }}
         run: |
@@ -84,38 +87,12 @@ jobs:
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
           New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
 
-          $pfxPath = Join-Path $env:RUNNER_TEMP 'zero-trust-assessment.pfx'
-          [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:AZURE_CERTIFICATE_BASE64))
-
-          $securePassword = ConvertTo-SecureString -String $env:AZURE_CERTIFICATE_PASSWORD -AsPlainText -Force
-          Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation 'Cert:\CurrentUser\My' -Password $securePassword -Exportable | Out-Null
-
-          $cert = Get-ChildItem -Path 'Cert:\CurrentUser\My' |
-            Where-Object { $_.HasPrivateKey -and $_.Thumbprint -ne '' } |
-            Sort-Object NotBefore -Descending |
-            Select-Object -First 1
-
-          if (-not $cert) {
-            throw 'The certificate was not imported into the local certificate store.'
-          }
-
-          if (-not $cert.HasPrivateKey) {
-            throw 'The certificate secret does not contain a private key.'
-          }
-
           $days = [int]$env:ZT_DAYS
-          Write-Host "Using certificate thumbprint: $($cert.Thumbprint)"
           Write-Host "Using days value: $days"
 
           Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
 
-          Connect-MgGraph -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -NoWelcome
-
-          $supportedServices = @('Graph', 'Azure')
-          Write-Host "Running the GitHub-hosted app-only assessment against the currently supported services: $($supportedServices -join ', ')"
-          Write-Host 'Exchange Online, SharePoint Online, Security & Compliance, and Azure Information Protection may require additional tenant-specific app authorization or a different authentication model for this environment.'
-
-          Connect-ZtAssessment -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -Environment Global -Service $supportedServices -Force
+          Connect-ZtAssessment -UseTokenCache -Force
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
