@@ -110,7 +110,12 @@ jobs:
           Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
 
           Connect-MgGraph -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -NoWelcome
-          Connect-ZtAssessment -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -Environment Global -Service 'All'
+
+          $supportedServices = @('Graph', 'Azure')
+          Write-Host "Restricting app-only CI assessment to supported services: $($supportedServices -join ', ')"
+          Write-Host 'Exchange Online, SharePoint Online, Security & Compliance, and AIP require additional tenant/service-specific authorization and are not valid for this GitHub-hosted app-only run.'
+
+          Connect-ZtAssessment -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -Environment Global -Service $supportedServices -Force
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
