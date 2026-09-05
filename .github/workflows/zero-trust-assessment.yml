@@ -87,8 +87,7 @@ jobs:
           $pfxPath = Join-Path $env:RUNNER_TEMP 'zero-trust-assessment.pfx'
           [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:AZURE_CERTIFICATE_BASE64))
 
-          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-          $cert.Import($pfxPath, $env:AZURE_CERTIFICATE_PASSWORD, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfxPath, $env:AZURE_CERTIFICATE_PASSWORD, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
 
           Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
 
@@ -116,3 +115,4 @@ jobs:
         with:
           name: zero-trust-assessment-${{ github.run_id }}
           path: ${{ github.workspace }}/ZeroTrustReport
+
