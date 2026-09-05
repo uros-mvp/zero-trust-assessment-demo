@@ -27,9 +27,11 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   run-zero-trust-assessment:
+    name: Run Zero Trust Assessment
     runs-on: windows-latest
     timeout-minutes: 180
 
@@ -37,44 +39,80 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Azure login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-          allow-no-subscriptions: true
+      - name: Validate required secrets
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CERTIFICATE_BASE64: ${{ secrets.AZURE_CERTIFICATE_BASE64 }}
+          AZURE_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CERTIFICATE_PASSWORD }}
+        run: |
+          foreach ($name in @(
+            'AZURE_TENANT_ID',
+            'AZURE_CLIENT_ID',
+            'AZURE_SUBSCRIPTION_ID',
+            'AZURE_CERTIFICATE_BASE64',
+            'AZURE_CERTIFICATE_PASSWORD'
+          )) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item -Path "Env:$name" -ErrorAction SilentlyContinue).Value)) {
+              throw "Missing required GitHub secret or variable: $name"
+            }
+          }
 
-      - name: Install and import ZeroTrustAssessment
+      - name: Install PowerShell modules
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-Module Microsoft.PowerShell.PSResourceGet -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-          Import-Module Microsoft.PowerShell.PSResourceGet -Force
-          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Repository PSGallery -Quiet -ErrorAction Stop
-
-          $module = Get-Module -ListAvailable ZeroTrustAssessment | Sort-Object Version -Descending | Select-Object -First 1
-          if (-not $module) { throw 'ZeroTrustAssessment module was not installed.' }
-
-          Import-Module $module.Path -Force -Verbose
-          Get-Command Connect-ZtAssessment -ErrorAction Stop | Format-Table Name,Source -AutoSize
+          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
+          Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 
       - name: Run Zero Trust Assessment
         shell: pwsh
         env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CERTIFICATE_BASE64: ${{ secrets.AZURE_CERTIFICATE_BASE64 }}
+          AZURE_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CERTIFICATE_PASSWORD }}
           ZT_PILLAR: ${{ inputs.pillar || 'All' }}
           ZT_DAYS: ${{ inputs.days || '7' }}
         run: |
           $ErrorActionPreference = 'Stop'
+
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
           New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
 
-          Connect-ZtAssessment -TenantId ${{ secrets.AZURE_TENANT_ID }} -Environment Global -Service 'All'
-          Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days [int]$env:ZT_DAYS -NoBrowser -ShowLog
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'zero-trust-assessment.pfx'
+          [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:AZURE_CERTIFICATE_BASE64))
 
-      - name: Upload report
+          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+          $cert.Import($pfxPath, $env:AZURE_CERTIFICATE_PASSWORD, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+
+          Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
+
+          Connect-MgGraph -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -NoWelcome
+
+          Connect-ZtAssessment `
+            -TenantId $env:AZURE_TENANT_ID `
+            -ClientId $env:AZURE_CLIENT_ID `
+            -Certificate $cert `
+            -Environment Global `
+            -Service 'All'
+
+          Invoke-ZtAssessment `
+            -Path $reportPath `
+            -Pillar $env:ZT_PILLAR `
+            -Days [int]$env:ZT_DAYS `
+            -NoBrowser `
+            -ShowLog
+
+          Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
+
+      - name: Upload Zero Trust assessment report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zero-trust-report
+          name: zero-trust-assessment-${{ github.run_id }}
           path: ${{ github.workspace }}/ZeroTrustReport
