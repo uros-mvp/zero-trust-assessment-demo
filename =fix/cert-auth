@@ -87,38 +87,27 @@ jobs:
           $pfxPath = Join-Path $env:RUNNER_TEMP 'zero-trust-assessment.pfx'
           [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:AZURE_CERTIFICATE_BASE64))
 
-          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-            $pfxPath,
-            $env:AZURE_CERTIFICATE_PASSWORD,
-            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor
-            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor
-            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
-          )
+          $securePassword = ConvertTo-SecureString -String $env:AZURE_CERTIFICATE_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation 'Cert:\CurrentUser\My' -Password $securePassword -Exportable | Out-Null
 
-          if (-not $cert.HasPrivateKey) {
-            throw "The certificate secret does not contain a private key. Upload the .pfx (not only .cer) to the app registration and store the base64 of that PFX in AZURE_CERTIFICATE_BASE64."
+          $cert = Get-ChildItem -Path 'Cert:\CurrentUser\My' | Where-Object { $_.HasPrivateKey -and $_.Thumbprint -ne '' } | Sort-Object NotBefore -Descending | Select-Object -First 1
+          if (-not $cert) {
+            throw 'The certificate was not imported into the local certificate store.'
           }
 
-          Write-Host "Certificate thumbprint: $($cert.Thumbprint)"
-          Write-Host "Certificate subject: $($cert.Subject)"
+          if (-not $cert.HasPrivateKey) {
+            throw 'The certificate secret does not contain a private key.'
+          }
+
+          $days = [int]$env:ZT_DAYS
+          Write-Host "Using certificate thumbprint: $($cert.Thumbprint)"
+          Write-Host "Using days value: $days"
 
           Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
 
           Connect-MgGraph -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -NoWelcome
-
-          Connect-ZtAssessment `
-            -TenantId $env:AZURE_TENANT_ID `
-            -ClientId $env:AZURE_CLIENT_ID `
-            -Certificate $cert `
-            -Environment Global `
-            -Service 'All'
-
-          Invoke-ZtAssessment `
-            -Path $reportPath `
-            -Pillar $env:ZT_PILLAR `
-            -Days [int]$env:ZT_DAYS `
-            -NoBrowser `
-            -ShowLog
+          Connect-ZtAssessment -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -Environment Global -Service 'All'
+          Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
 
