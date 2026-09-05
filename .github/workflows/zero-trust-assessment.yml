@@ -1,0 +1,49 @@
+name: Zero Trust Assessment
+
+on:
+  workflow_dispatch:
+    inputs:
+      pillar:
+        description: 'Pillar to assess: All, Identity, Devices, Network, Data, Infrastructure, SecOps, AI'
+        required: false
+        default: 'All'
+        type: choice
+        options:
+          - All
+          - Identity
+          - Devices
+          - Network
+          - Data
+          - Infrastructure
+          - SecOps
+          - AI
+  schedule:
+    - cron: '0 4 * * 1'
+
+jobs:
+  run-zero-trust-assessment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          allow-no-subscriptions: true
+      - name: Install module
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet
+      - name: Run assessment
+        shell: pwsh
+        run: |
+          Connect-ZtAssessment -TenantId ${{ secrets.AZURE_TENANT_ID }}
+          Invoke-ZtAssessment -Path ./ZeroTrustReport -Pillar ${{ inputs.pillar || 'All' }} -NoBrowser -ShowLog
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zero-trust-report
+          path: ./ZeroTrustReport
