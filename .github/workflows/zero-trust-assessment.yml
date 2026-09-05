@@ -44,28 +44,23 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Install and import ZeroTrustAssessment
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $moduleName = 'ZeroTrustAssessment'
 
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.PowerShell.PSResourceGet -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
           Import-Module Microsoft.PowerShell.PSResourceGet -Force
-          Install-PSResource -Name $moduleName -Scope CurrentUser -TrustRepository -Repository PSGallery -Quiet -ErrorAction Stop
+          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Repository PSGallery -Quiet -ErrorAction Stop
 
-          $resource = Get-PSResource $moduleName -ErrorAction Stop
-          $moduleRoot = $resource.InstalledLocation
-          if (-not $moduleRoot) { throw 'ZeroTrustAssessment InstalledLocation is empty.' }
+          $module = Get-Module -ListAvailable ZeroTrustAssessment | Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $module) { throw 'ZeroTrustAssessment module was not installed.' }
 
-          $manifest = Get-ChildItem -Path $moduleRoot -Recurse -Filter "$moduleName.psd1" -File | Select-Object -First 1
-          if (-not $manifest) { throw "Unable to find $moduleName.psd1 under $moduleRoot" }
-
-          Import-Module $manifest.FullName -Force -Verbose
+          Import-Module $module.Path -Force -Verbose
           Get-Command Connect-ZtAssessment -ErrorAction Stop | Format-Table Name,Source -AutoSize
 
       - name: Run Zero Trust Assessment
-        shell: powershell
+        shell: pwsh
         env:
           ZT_PILLAR: ${{ inputs.pillar || 'All' }}
           ZT_DAYS: ${{ inputs.days || '7' }}
