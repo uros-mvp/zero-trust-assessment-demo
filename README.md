@@ -1,47 +1,19 @@
-# Zero Trust Assessment Demo
+# Zero Trust Assessment
 
-This repository demonstrates how to run the Microsoft Zero Trust Assessment in a GitHub-based workflow and validate the tenant posture using the official PowerShell module.
+This repository is a demo environment for the Microsoft Zero Trust Assessment module. It is intended to validate how the assessment works in a tenant, how it is executed from a trusted environment, and how a GitHub-based workflow can be used for automation and reporting.
 
-## Overview
+The Zero Trust Assessment is a PowerShell module that checks your tenant configuration and recommends ways to improve the security posture.
 
-The project is intended as a lightweight proof-of-concept and demo environment for the Microsoft Zero Trust Assessment module. It shows how to:
+To learn more, see the official Microsoft documentation:
 
-- install and use the Zero Trust Assessment PowerShell module
-- authenticate to Microsoft 365 and Azure
-- run the assessment against a tenant
-- generate a report artifact from GitHub Actions
-- test the workflow in a controlled demo repository
+- aka.ms/zerotrust/assessment
+- aka.ms/zerotrust/demo
+- aka.ms/zerotrust/feedback
+- aka.ms/zerotrust/issues
 
-## Why this repository exists
+## Installing and running the assessment
 
-The purpose of this demo is to validate the end-to-end assessment flow and document the authentication requirements for the different Microsoft 365 services that the assessment checks.
-
-In particular, this repository captures the practical lesson that:
-
-- the official Microsoft flow is based on a signed-in tenant context
-- GitHub-hosted app-only execution is not equivalent to a full tenant assessment flow
-- some services require additional tenant-specific authorization or a different execution model
-
-## Repository contents
-
-- `.github/workflows/zero-trust-assessment.yml` — GitHub Actions workflow for running the assessment
-- `README.md` — project overview and usage guide
-
-## Prerequisites
-
-Before using this repository, make sure you have:
-
-- a Microsoft 365 tenant with administrative access
-- a PowerShell 7 environment
-- access to Microsoft Graph and Azure
-- the required permissions for the services you intend to validate
-- a runner capable of authenticating to the tenant
-
-## Recommended execution model
-
-The most reliable execution model for the official Zero Trust Assessment is a signed-in tenant session, typically on a self-hosted runner or a trusted internal machine.
-
-This matches the Microsoft-supported flow documented in the official Zero Trust Assessment project:
+Use PowerShell 7 to install, sign in, and run the assessment against your tenant.
 
 ```powershell
 Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser
@@ -49,21 +21,24 @@ Connect-ZtAssessment
 Invoke-ZtAssessment
 ```
 
-GitHub-hosted runners can be used for experimentation and limited automation, but they do not behave the same as a fully authenticated tenant session and can fail for services that require additional authorization or a different auth model.
+By default, `Invoke-ZtAssessment` runs the current pillars: Identity, Devices, Network, Data, Infrastructure, SecOps, and AI.
 
-## Workflow
+## This demo repository
 
-The workflow in `.github/workflows/zero-trust-assessment.yml` is designed to:
+This repository is a practical test harness for the Zero Trust Assessment workflow and is designed to validate how the tool behaves in a GitHub repository context.
 
-1. install the required PowerShell modules
-2. connect to the tenant using the runner's authenticated context
-3. run the Zero Trust Assessment
-4. generate a report in the workspace
-5. upload the report as an artifact
+It includes:
 
-## Manual local execution
+- a GitHub Actions workflow for triggering the assessment
+- a sample project layout for testing the module in CI/CD
+- notes about the authentication model used by Microsoft 365 services
+- guidance for reliable execution on a trusted runtime
 
-You can run the assessment directly from PowerShell on a trusted machine:
+## Recommended execution model
+
+The most reliable way to run the assessment is from a signed-in tenant context on a trusted machine or self-hosted runner.
+
+This matches the official Microsoft usage pattern:
 
 ```powershell
 Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser
@@ -71,22 +46,53 @@ Connect-ZtAssessment
 Invoke-ZtAssessment -Path .\ZeroTrustReport -NoBrowser -ShowLog
 ```
 
-## GitHub Actions
+## Infrastructure pillar scope
 
-To run the workflow manually in GitHub:
+Infrastructure pillar results are based on Microsoft Defender for Cloud recommendations and only include Azure subscriptions tagged with `ZeroTrustAssessment:Infrastructure`.
 
-1. open the repository
-2. go to Actions
-3. choose the workflow
-4. run it manually with the desired pillar and day range
+## Repository structure
+
+- `.github/workflows/zero-trust-assessment.yml` — workflow used to run the assessment
+- `README.md` — project overview and instructions
+- `ZeroTrustReport/` — generated output folder
+
+## Prerequisites
+
+Before running the assessment, ensure that you have:
+
+- a Microsoft 365 tenant with administrative access
+- PowerShell 7 installed
+- sufficient permissions for the services being evaluated
+- access to Graph, Azure, and the relevant Microsoft 365 workloads
+- a trusted execution environment for tenant authentication
+
+## GitHub Actions usage
+
+This repository includes a GitHub Actions workflow that can be triggered manually.
+
+The workflow is designed to:
+
+1. install the required PowerShell modules
+2. connect to the tenant using the runner context
+3. run the assessment against the selected pillar and time window
+4. generate a report in the workspace
+5. upload the output as a workflow artifact
 
 ## Important notes
 
-- This repo is meant as a demo and validation environment.
-- The assessment is tenant-dependent and requires valid permissions.
-- Some Microsoft 365 services may need additional tenant configuration beyond basic app registration.
-- A successful result depends on the execution context and the authentication model being used.
+- The assessment is tenant-specific and permission-dependent.
+- Some services may require additional tenant-level authorization beyond basic app registration.
+- A GitHub-hosted app-only flow is not equivalent to a fully authenticated tenant audit.
+- For demo and presentation purposes, a signed-in or self-hosted environment is the most representative execution model.
+
+## Zero Trust Assessment report
+
+A sample assessment report is generated as part of the workflow run and can be reviewed from the generated artifacts.
+
+## Contributing
+
+This project is intended for testing, proof-of-concept validation, and demo use. Contributions and suggestions are welcome when they help improve the workflow or documentation.
 
 ## License
 
-This project is provided for demonstration and testing purposes.
+This repository is provided for demonstration and testing purposes and is intended to support evaluation of the Microsoft Zero Trust Assessment module.
