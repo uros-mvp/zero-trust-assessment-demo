@@ -43,16 +43,26 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
           allow-no-subscriptions: true
 
-      - name: Install PowerShell module
+      - name: Install and import ZeroTrustAssessment
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
+          $moduleName = 'ZeroTrustAssessment'
+
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.PowerShell.PSResourceGet -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
           Import-Module Microsoft.PowerShell.PSResourceGet -Force
-          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
-          $module = Get-Module -ListAvailable ZeroTrustAssessment | Sort-Object Version -Descending | Select-Object -First 1
-          if (-not $module) { throw 'ZeroTrustAssessment module was not installed.' }
-          Import-Module $module.Path -Force -Verbose
+          Install-PSResource -Name $moduleName -Scope CurrentUser -TrustRepository -Repository PSGallery -Quiet -ErrorAction Stop
+
+          $resource = Get-PSResource $moduleName -ErrorAction Stop
+          $moduleRoot = $resource.InstalledLocation
+          if (-not $moduleRoot) { throw 'ZeroTrustAssessment InstalledLocation is empty.' }
+
+          $manifest = Get-ChildItem -Path $moduleRoot -Recurse -Filter "$moduleName.psd1" -File | Select-Object -First 1
+          if (-not $manifest) { throw "Unable to find $moduleName.psd1 under $moduleRoot" }
+
+          Import-Module $manifest.FullName -Force -Verbose
+          Get-Command Connect-ZtAssessment -ErrorAction Stop | Format-Table Name,Source -AutoSize
 
       - name: Run Zero Trust Assessment
         shell: powershell
