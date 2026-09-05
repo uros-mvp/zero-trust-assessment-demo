@@ -67,3 +67,4 @@ jobs:
         with:
           name: zero-trust-report
           path: ${{ github.workspace }}/ZeroTrustReport
+
