@@ -112,8 +112,8 @@ jobs:
           Connect-MgGraph -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -NoWelcome
 
           $supportedServices = @('Graph', 'Azure')
-          Write-Host "Restricting app-only CI assessment to supported services: $($supportedServices -join ', ')"
-          Write-Host 'Exchange Online, SharePoint Online, Security & Compliance, and AIP require additional tenant/service-specific authorization and are not valid for this GitHub-hosted app-only run.'
+          Write-Host "Running the GitHub-hosted app-only assessment against the currently supported services: $($supportedServices -join ', ')"
+          Write-Host 'Exchange Online, SharePoint Online, Security & Compliance, and Azure Information Protection may require additional tenant-specific app authorization or a different authentication model for this environment.'
 
           Connect-ZtAssessment -TenantId $env:AZURE_TENANT_ID -ClientId $env:AZURE_CLIENT_ID -Certificate $cert -Environment Global -Service $supportedServices -Force
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
