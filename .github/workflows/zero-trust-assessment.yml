@@ -27,13 +27,19 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   run-zero-trust-assessment:
     name: Run Zero Trust Assessment
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ZT_PILLAR: ${{ inputs.pillar || 'All' }}
+      ZT_DAYS: ${{ inputs.days || '7' }}
 
     steps:
       - name: Checkout repository
@@ -47,52 +53,30 @@ jobs:
           Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
           Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 
-      - name: Connect to tenant using the runner's logged-in context
+      - name: Azure login using client secret
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Run Zero Trust Assessment
         shell: pwsh
-        env:
-          ZT_PILLAR: ${{ inputs.pillar || 'All' }}
-          ZT_DAYS: ${{ inputs.days || '7' }}
         run: |
           $ErrorActionPreference = 'Stop'
 
           Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
-
-          Write-Host 'This workflow expects the self-hosted runner to already be signed in to the Microsoft 365 tenant.'
-          Write-Host 'That matches the official Microsoft Zero Trust Assessment flow: install module, connect to the tenant, then run the assessment.'
-
-          try {
-            Connect-ZtAssessment -UseTokenCache -Force
-          }
-          catch {
-            Write-Host 'The runner does not currently have a valid Microsoft 365 tenant token cache. Please sign in to the self-hosted runner session and rerun.'
-            throw
-          }
-
-          $context = Get-MgContext -ErrorAction SilentlyContinue
-          if (-not $context) {
-            throw 'No active Microsoft Graph context was found on the self-hosted runner. Please authenticate to the tenant first.'
-          }
-
-          Write-Host "Authenticated as: $($context.Account)"
-          Write-Host "Tenant: $($context.TenantId)"
-
-      - name: Run Zero Trust Assessment
-        shell: pwsh
-        env:
-          ZT_PILLAR: ${{ inputs.pillar || 'All' }}
-          ZT_DAYS: ${{ inputs.days || '7' }}
-        run: |
-          $ErrorActionPreference = 'Stop'
+          Import-Module Microsoft.Graph.Authentication -Force -ErrorAction Stop
 
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
           New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
 
           $days = [int]$env:ZT_DAYS
+          Write-Host "Using pillar: $env:ZT_PILLAR"
           Write-Host "Using days value: $days"
 
-          Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
-
-          Connect-ZtAssessment -UseTokenCache -Force
+          Connect-ZtAssessment -TenantId $env:AZURE_TENANT_ID -ApplicationId $env:AZURE_CLIENT_ID -ClientSecret $env:AZURE_CLIENT_SECRET
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
