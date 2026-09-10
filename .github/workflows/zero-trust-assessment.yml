@@ -27,7 +27,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   run-zero-trust-assessment:
@@ -46,23 +45,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install PowerShell modules
-        shell: powershell
+      - name: Install required PowerShell modules
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
 
           if (-not (Get-Command Install-PSResource -ErrorAction SilentlyContinue)) {
             Install-Module Microsoft.PowerShell.PSResourceGet -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction Stop
-            Import-Module Microsoft.PowerShell.PSResourceGet -Force -ErrorAction Stop
           }
 
-          if (-not (Get-Module -ListAvailable -Name ZeroTrustAssessment)) {
-            Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
-          }
+          Import-Module Microsoft.PowerShell.PSResourceGet -Force -ErrorAction Stop
 
-          Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction Stop
-          Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction Stop
+          foreach ($moduleName in @('ZeroTrustAssessment', 'Microsoft.Graph.Authentication', 'ExchangeOnlineManagement')) {
+            if (-not (Get-Module -ListAvailable -Name $moduleName)) {
+              Install-PSResource -Name $moduleName -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
+            }
+          }
 
       - name: Azure login using service principal creds
         uses: azure/login@v2
@@ -76,7 +75,7 @@ jobs:
             }
 
       - name: Run Zero Trust Assessment
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -90,7 +89,7 @@ jobs:
           Write-Host "Using pillar: $env:ZT_PILLAR"
           Write-Host "Using days value: $days"
 
-          Connect-ZtAssessment
+          Connect-ZtAssessment -Force
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
