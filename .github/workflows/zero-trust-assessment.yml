@@ -80,7 +80,8 @@ jobs:
           Write-Host "Using pillar: $env:ZT_PILLAR"
           Write-Host "Using days value: $days"
 
-          Connect-ZtAssessment -TenantId $env:AZURE_TENANT_ID -ApplicationId $env:AZURE_CLIENT_ID -ClientSecret $env:AZURE_CLIENT_SECRET
+          # Use the already authenticated Azure context rather than unsupported explicit parameters.
+          Connect-ZtAssessment
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
