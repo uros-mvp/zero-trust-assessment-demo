@@ -51,9 +51,18 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
-          Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-          Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+
+          if (-not (Get-Command Install-PSResource -ErrorAction SilentlyContinue)) {
+            Install-Module Microsoft.PowerShell.PSResourceGet -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction Stop
+            Import-Module Microsoft.PowerShell.PSResourceGet -Force -ErrorAction Stop
+          }
+
+          if (-not (Get-Module -ListAvailable -Name ZeroTrustAssessment)) {
+            Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
+          }
+
+          Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction Stop
+          Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction Stop
 
       - name: Azure login using service principal creds
         uses: azure/login@v2
