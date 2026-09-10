@@ -32,7 +32,7 @@ permissions:
 jobs:
   run-zero-trust-assessment:
     name: Run Zero Trust Assessment
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 180
     env:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -47,12 +47,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install PowerShell modules
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
           Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+          Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 
       - name: Azure login using service principal creds
         uses: azure/login@v2
@@ -66,7 +67,7 @@ jobs:
             }
 
       - name: Run Zero Trust Assessment
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -80,7 +81,6 @@ jobs:
           Write-Host "Using pillar: $env:ZT_PILLAR"
           Write-Host "Using days value: $days"
 
-          # Use the already authenticated Azure context rather than unsupported explicit parameters.
           Connect-ZtAssessment
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
 
