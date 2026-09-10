@@ -70,22 +70,31 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE)) {
+            throw 'AZURE_CLIENT_CERTIFICATE is empty.'
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE_PASSWORD)) {
+            throw 'AZURE_CLIENT_CERTIFICATE_PASSWORD is empty.'
+          }
+
           $pfxPath = Join-Path $env:RUNNER_TEMP 'zt-assessment.pfx'
           [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:AZURE_CLIENT_CERTIFICATE))
-          Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation 'Cert:\CurrentUser\My' -Password (ConvertTo-SecureString -String $env:AZURE_CLIENT_CERTIFICATE_PASSWORD -AsPlainText -Force) | Out-Null
-          Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -match 'ZeroTrustAssessment' -or $_.Subject -match 'CN=' } | Select-Object Subject, Thumbprint | Format-Table -AutoSize
 
-      - name: Azure login using service principal creds
-        if: ${{ env.AZURE_CLIENT_CERTIFICATE == '' }}
-        uses: azure/login@v2
-        with:
-          creds: >-
-            {
-              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
-              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
-              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
-              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
-            }
+          Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation 'Cert:\CurrentUser\My' -Password (ConvertTo-SecureString -String $env:AZURE_CLIENT_CERTIFICATE_PASSWORD -AsPlainText -Force) | Out-Null
+
+          $cert = Get-ChildItem Cert:\CurrentUser\My |
+            Where-Object { $_.Subject -match 'ZeroTrustAssessment' } |
+            Sort-Object NotBefore -Descending |
+            Select-Object -First 1
+
+          if (-not $cert) {
+            throw "No certificate matching 'ZeroTrustAssessment' was found in CurrentUser\My after import."
+          }
+
+          "ZT_CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+          $cert | Select-Object Subject, Thumbprint | Format-Table -AutoSize
 
       - name: Azure login using certificate
         if: ${{ env.AZURE_CLIENT_CERTIFICATE != '' }}
@@ -96,10 +105,33 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
 
+      - name: Validate app auth configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ($env:AZURE_CLIENT_CERTIFICATE) {
+            if ([string]::IsNullOrWhiteSpace($env:ZT_CERT_THUMBPRINT)) {
+              throw 'Certificate was not installed correctly; ZT_CERT_THUMBPRINT is missing.'
+            }
+            Write-Host 'Using certificate-based app-only auth for Zero Trust Assessment.'
+            return
+          }
+
+          throw 'No valid app-only certificate was configured. Set AZURE_CLIENT_CERTIFICATE and AZURE_CLIENT_CERTIFICATE_PASSWORD in the repository secrets.'
+
       - name: Run Zero Trust Assessment
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID) -or [string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID)) {
+            throw 'AZURE_CLIENT_ID and AZURE_TENANT_ID must be configured.'
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE)) {
+            throw 'Certificate-based app-only auth is required for ZeroTrustAssessment. Set AZURE_CLIENT_CERTIFICATE and AZURE_CLIENT_CERTIFICATE_PASSWORD in repository secrets.'
+          }
 
           Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
           Import-Module Microsoft.Graph.Authentication -Force -ErrorAction Stop
@@ -110,13 +142,10 @@ jobs:
           $days = [int]$env:ZT_DAYS
           Write-Host "Using pillar: $env:ZT_PILLAR"
           Write-Host "Using days value: $days"
+          Write-Host "Using certificate-thumbprint: $env:ZT_CERT_THUMBPRINT"
 
-          if ($env:AZURE_CLIENT_CERTIFICATE) {
-            Connect-ZtAssessment -ClientId $env:AZURE_CLIENT_ID -TenantId $env:AZURE_TENANT_ID -Certificate 'CN=ZeroTrustAssessment' -Service All -Force
-          }
-          else {
-            Connect-ZtAssessment -Force
-          }
+          $certSelector = if ($env:ZT_CERT_THUMBPRINT) { $env:ZT_CERT_THUMBPRINT } else { 'CN=ZeroTrustAssessment' }
+          Connect-ZtAssessment -ClientId $env:AZURE_CLIENT_ID -TenantId $env:AZURE_TENANT_ID -Certificate $certSelector -Service All -Force
 
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
 
