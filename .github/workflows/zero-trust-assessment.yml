@@ -36,7 +36,6 @@ jobs:
     env:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       AZURE_CLIENT_CERTIFICATE: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
       AZURE_CLIENT_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CLIENT_CERTIFICATE_PASSWORD }}
@@ -104,21 +103,35 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
+          enable-AzPSSession: true
 
       - name: Validate app auth configuration
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          if ($env:AZURE_CLIENT_CERTIFICATE) {
-            if ([string]::IsNullOrWhiteSpace($env:ZT_CERT_THUMBPRINT)) {
-              throw 'Certificate was not installed correctly; ZT_CERT_THUMBPRINT is missing.'
-            }
-            Write-Host 'Using certificate-based app-only auth for Zero Trust Assessment.'
-            return
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID)) {
+            throw 'AZURE_CLIENT_ID is required.'
           }
 
-          throw 'No valid app-only certificate was configured. Set AZURE_CLIENT_CERTIFICATE and AZURE_CLIENT_CERTIFICATE_PASSWORD in the repository secrets.'
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID)) {
+            throw 'AZURE_TENANT_ID is required.'
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE)) {
+            throw 'AZURE_CLIENT_CERTIFICATE is required for app-only auth.'
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:ZT_CERT_THUMBPRINT)) {
+            throw 'Certificate was not installed correctly; ZT_CERT_THUMBPRINT is missing.'
+          }
+
+          Write-Host 'Using certificate-based app-only auth for Zero Trust Assessment.'
+          Write-Host "TenantId=$env:AZURE_TENANT_ID"
+          Write-Host "ClientId=$env:AZURE_CLIENT_ID"
+          Write-Host "CertificateThumbprint=$env:ZT_CERT_THUMBPRINT"
+
+          az account show --output table
 
       - name: Run Zero Trust Assessment
         shell: pwsh
@@ -145,6 +158,7 @@ jobs:
           Write-Host "Using certificate-thumbprint: $env:ZT_CERT_THUMBPRINT"
 
           $certSelector = if ($env:ZT_CERT_THUMBPRINT) { $env:ZT_CERT_THUMBPRINT } else { 'CN=ZeroTrustAssessment' }
+          Write-Host "Connecting ZT Assessment using certificate selector: $certSelector"
           Connect-ZtAssessment -ClientId $env:AZURE_CLIENT_ID -TenantId $env:AZURE_TENANT_ID -Certificate $certSelector -Service All -Force
 
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
