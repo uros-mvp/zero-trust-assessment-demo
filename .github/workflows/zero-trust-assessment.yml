@@ -324,7 +324,7 @@ jobs:
                 $htmlRows += @(
                   '              <tr>',
                   "                <td>$($check.name)</td>",
-                  "                <td><span style=\"color:$statusColor;font-weight:bold;\">$($check.status)</span></td>",
+                  "                <td><span style=`"color:$statusColor;font-weight:bold;`">$($check.status)</span></td>",
                   "                <td>$($check.detail)</td>",
                   '              </tr>'
                 )
