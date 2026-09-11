@@ -146,70 +146,86 @@ jobs:
       - name: Run Zero Trust Assessment
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-
-          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID) -or [string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID)) {
-            throw 'AZURE_CLIENT_ID and AZURE_TENANT_ID must be configured.'
-          }
-
-          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE_THUMBPRINT)) {
-            throw 'AZURE_CLIENT_CERTIFICATE_THUMBPRINT is required for certificate-based Microsoft Graph authentication.'
-          }
-
+          $ErrorActionPreference = 'Continue'
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
           New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
 
-          $days = [int]$env:ZT_DAYS
-          Write-Host "Using pillar: $env:ZT_PILLAR"
-          Write-Host "Using days value: $days"
-
-          $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $env:AZURE_CLIENT_CERTIFICATE_THUMBPRINT } | Select-Object -First 1
-          if (-not $cert) {
-            throw "Certificate with thumbprint $env:AZURE_CLIENT_CERTIFICATE_THUMBPRINT was not found in CurrentUser\My."
-          }
-
           $tenantId = $env:AZURE_TENANT_ID
           $clientId = $env:AZURE_CLIENT_ID
-          $thumbprint = $cert.Thumbprint
+          $thumbprint = $null
+          $days = [int]$env:ZT_DAYS
 
-          foreach ($moduleName in @('ZeroTrustAssessment', 'Microsoft.Graph.Authentication', 'ExchangeOnlineManagement')) {
-            try {
-              Import-Module $moduleName -Force -ErrorAction Stop
-              Write-Host "Imported module: $moduleName"
-            }
-            catch {
-              Write-Warning "Failed to import $($moduleName): $($_.Exception.Message)"
-            }
-          }
+          function Write-BlockedReport {
+            param(
+              [Parameter(Mandatory = $true)][string]$Reason,
+              [string]$TenantId = $env:AZURE_TENANT_ID,
+              [string]$ClientId = $env:AZURE_CLIENT_ID,
+              [string]$Thumbprint = $null,
+              [string]$Extra = ''
+            )
 
-          $graphContext = $null
-          try {
-            Write-Host 'Authenticating to Microsoft Graph using the configured certificate.'
-            Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $thumbprint -NoWelcome -ErrorAction Stop
-            $graphContext = Get-MgContext
-          }
-          catch {
-            $graphContext = $null
-            Write-Warning "Microsoft Graph certificate authentication failed: $($_.Exception.Message)"
-          }
-
-          if (-not $graphContext -or [string]::IsNullOrWhiteSpace($graphContext.TenantId)) {
             $blockedFile = Join-Path $reportPath 'ZeroTrustAssessment-blocked.txt'
             @(
-              'Zero Trust Assessment was not run in this GitHub-hosted runner because the module still requires browser-based Microsoft Graph authentication in a headless environment.',
+              $Reason,
               '',
               "Timestamp: $(Get-Date -Format o)",
-              "TenantId: $tenantId",
-              "ClientId: $clientId",
-              "Thumbprint: $thumbprint",
+              "TenantId: $TenantId",
+              "ClientId: $ClientId",
+              if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) { "Thumbprint: $Thumbprint" } else { $null },
               '',
-              'Reason: Microsoft Graph context was not established after certificate-based authentication.'
-            ) | Set-Content -Path $blockedFile -Encoding UTF8
+              $Extra
+            ) | Where-Object { $_ -ne $null } | Set-Content -Path $blockedFile -Encoding UTF8
 
-            Write-Warning 'Microsoft Graph context was not established in this headless environment. Skipping ZeroTrustAssessment module execution and recording a blocked artifact instead.'
-            Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
+            Write-Warning $Reason
           }
-          else {
+
+          try {
+            if ([string]::IsNullOrWhiteSpace($clientId) -or [string]::IsNullOrWhiteSpace($tenantId)) {
+              throw 'AZURE_CLIENT_ID and AZURE_TENANT_ID must be configured.'
+            }
+
+            if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE_THUMBPRINT)) {
+              throw 'AZURE_CLIENT_CERTIFICATE_THUMBPRINT is required for certificate-based Microsoft Graph authentication.'
+            }
+
+            Write-Host "Using pillar: $env:ZT_PILLAR"
+            Write-Host "Using days value: $days"
+
+            $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $env:AZURE_CLIENT_CERTIFICATE_THUMBPRINT } | Select-Object -First 1
+            if (-not $cert) {
+              throw "Certificate with thumbprint $env:AZURE_CLIENT_CERTIFICATE_THUMBPRINT was not found in CurrentUser\My."
+            }
+
+            $thumbprint = $cert.Thumbprint
+            Write-Host "Using certificate thumbprint: $thumbprint"
+
+            foreach ($moduleName in @('ZeroTrustAssessment', 'Microsoft.Graph.Authentication', 'ExchangeOnlineManagement')) {
+              try {
+                Import-Module $moduleName -Force -ErrorAction Stop
+                Write-Host "Imported module: $moduleName"
+              }
+              catch {
+                Write-Warning "Failed to import $($moduleName): $($_.Exception.Message)"
+              }
+            }
+
+            $graphContext = $null
+            try {
+              Write-Host 'Authenticating to Microsoft Graph using the configured certificate.'
+              Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $thumbprint -NoWelcome -ErrorAction Stop
+              $graphContext = Get-MgContext
+            }
+            catch {
+              $graphContext = $null
+              Write-Warning "Microsoft Graph certificate authentication failed: $($_.Exception.Message)"
+            }
+
+            if (-not $graphContext -or [string]::IsNullOrWhiteSpace($graphContext.TenantId)) {
+              Write-BlockedReport -Reason 'Zero Trust Assessment was not run in this GitHub-hosted runner because the module still requires browser-based Microsoft Graph authentication in a headless environment.' -TenantId $tenantId -ClientId $clientId -Thumbprint $thumbprint -Extra 'Reason: Microsoft Graph context was not established after certificate-based authentication.'
+              Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
+              return
+            }
+
             Write-Host "Graph context established for tenant $($graphContext.TenantId)."
 
             Write-Host 'Attempting Exchange Online certificate authentication without browser interaction.'
@@ -361,20 +377,12 @@ jobs:
             }
             catch {
               $message = $_.Exception.Message
-              $blockedFile = Join-Path $reportPath 'ZeroTrustAssessment-blocked.txt'
-              @(
-                'Zero Trust Assessment could not complete in this GitHub-hosted runner using the native module. A direct headless Graph report was attempted instead, but it failed.',
-                '',
-                "Timestamp: $(Get-Date -Format o)",
-                "TenantId: $tenantId",
-                "ClientId: $clientId",
-                "Thumbprint: $thumbprint",
-                '',
-                "Error: $message"
-              ) | Set-Content -Path $blockedFile -Encoding UTF8
-
-              Write-Warning "Custom headless report failed; a blocked-status artifact was created instead. $message"
+              Write-BlockedReport -Reason 'Zero Trust Assessment could not complete in this GitHub-hosted runner using the native module. A direct headless Graph report was attempted instead, but it failed.' -TenantId $tenantId -ClientId $clientId -Thumbprint $thumbprint -Extra "Error: $message"
             }
+          }
+          catch {
+            $message = $_.Exception.Message
+            Write-BlockedReport -Reason 'Zero Trust Assessment could not start correctly in this GitHub-hosted runner.' -TenantId $tenantId -ClientId $clientId -Thumbprint $thumbprint -Extra "Error: $message"
           }
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
