@@ -178,7 +178,7 @@ jobs:
               Write-Host "Imported module: $moduleName"
             }
             catch {
-              Write-Warning "Failed to import $moduleName: $($_.Exception.Message)"
+              Write-Warning "Failed to import $($moduleName): $($_.Exception.Message)"
             }
           }
 
