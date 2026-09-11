@@ -156,10 +156,6 @@ jobs:
             throw 'AZURE_CLIENT_CERTIFICATE_THUMBPRINT is required for certificate-based Microsoft Graph authentication.'
           }
 
-          Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
-          Import-Module Microsoft.Graph.Authentication -Force -ErrorAction Stop
-          Import-Module ExchangeOnlineManagement -Force -ErrorAction Stop
-
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
           New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
 
@@ -176,10 +172,27 @@ jobs:
           $clientId = $env:AZURE_CLIENT_ID
           $thumbprint = $cert.Thumbprint
 
-          Write-Host 'Authenticating to Microsoft Graph using the configured certificate.'
-          Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $thumbprint -NoWelcome -ErrorAction Stop
+          foreach ($moduleName in @('ZeroTrustAssessment', 'Microsoft.Graph.Authentication', 'ExchangeOnlineManagement')) {
+            try {
+              Import-Module $moduleName -Force -ErrorAction Stop
+              Write-Host "Imported module: $moduleName"
+            }
+            catch {
+              Write-Warning "Failed to import $moduleName: $($_.Exception.Message)"
+            }
+          }
 
-          $graphContext = Get-MgContext
+          $graphContext = $null
+          try {
+            Write-Host 'Authenticating to Microsoft Graph using the configured certificate.'
+            Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $thumbprint -NoWelcome -ErrorAction Stop
+            $graphContext = Get-MgContext
+          }
+          catch {
+            $graphContext = $null
+            Write-Warning "Microsoft Graph certificate authentication failed: $($_.Exception.Message)"
+          }
+
           if (-not $graphContext -or [string]::IsNullOrWhiteSpace($graphContext.TenantId)) {
             $blockedFile = Join-Path $reportPath 'ZeroTrustAssessment-blocked.txt'
             @(
@@ -195,174 +208,173 @@ jobs:
 
             Write-Warning 'Microsoft Graph context was not established in this headless environment. Skipping ZeroTrustAssessment module execution and recording a blocked artifact instead.'
             Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
-            return
           }
+          else {
+            Write-Host "Graph context established for tenant $($graphContext.TenantId)."
 
-          Write-Host "Graph context established for tenant $($graphContext.TenantId)."
+            Write-Host 'Attempting Exchange Online certificate authentication without browser interaction.'
+            try {
+              Connect-ExchangeOnline -CertificateThumbprint $thumbprint -AppId $clientId -Organization $tenantId -ShowBanner:$false -ErrorAction Stop
+            }
+            catch {
+              Write-Warning "Exchange Online certificate authentication was not available in this environment: $($_.Exception.Message)"
+            }
 
-          Write-Host 'Attempting Exchange Online certificate authentication without browser interaction.'
-          try {
-            Connect-ExchangeOnline -CertificateThumbprint $thumbprint -AppId $clientId -Organization $tenantId -ShowBanner:$false -ErrorAction Stop
-          }
-          catch {
-            Write-Warning "Exchange Online certificate authentication was not available in this environment: $($_.Exception.Message)"
-          }
+            Write-Host 'Attempting Security & Compliance certificate authentication without browser interaction.'
+            try {
+              Connect-IPPSSession -CertificateThumbprint $thumbprint -AppId $clientId -Organization $tenantId -ErrorAction Stop
+            }
+            catch {
+              Write-Warning "Security & Compliance certificate authentication was not available in this environment: $($_.Exception.Message)"
+            }
 
-          Write-Host 'Attempting Security & Compliance certificate authentication without browser interaction.'
-          try {
-            Connect-IPPSSession -CertificateThumbprint $thumbprint -AppId $clientId -Organization $tenantId -ErrorAction Stop
-          }
-          catch {
-            Write-Warning "Security & Compliance certificate authentication was not available in this environment: $($_.Exception.Message)"
-          }
+            try {
+              $spoAdminUrl = "https://$tenantId-admin.sharepoint.com"
+              Connect-SPOService -Url $spoAdminUrl -ClientId $clientId -CertificateThumbprint $thumbprint -ErrorAction Stop
+            }
+            catch {
+              Write-Warning "SharePoint Online certificate authentication was not available in this environment: $($_.Exception.Message)"
+            }
 
-          # best-effort SharePoint admin connection for scenarios that require it
-          try {
-            $spoAdminUrl = "https://$tenantId-admin.sharepoint.com"
-            Connect-SPOService -Url $spoAdminUrl -ClientId $clientId -CertificateThumbprint $thumbprint -ErrorAction Stop
-          }
-          catch {
-            Write-Warning "SharePoint Online certificate authentication was not available in this environment: $($_.Exception.Message)"
-          }
+            try {
+              $customReportPath = Join-Path $reportPath 'ZeroTrustAssessment-report.json'
+              $htmlReportPath = Join-Path $reportPath 'ZeroTrustAssessment-summary.html'
+              $checks = @()
 
-          try {
-            $customReportPath = Join-Path $reportPath 'ZeroTrustAssessment-report.json'
-            $htmlReportPath = Join-Path $reportPath 'ZeroTrustAssessment-summary.html'
-            $checks = @()
+              function Add-ReportCheck {
+                param(
+                  [Parameter(Mandatory = $true)][string]$Name,
+                  [Parameter(Mandatory = $true)][string]$Status,
+                  [Parameter(Mandatory = $true)][string]$Detail,
+                  [hashtable]$Properties = @{}
+                )
 
-            function Add-ReportCheck {
-              param(
-                [Parameter(Mandatory = $true)][string]$Name,
-                [Parameter(Mandatory = $true)][string]$Status,
-                [Parameter(Mandatory = $true)][string]$Detail,
-                [hashtable]$Properties = @{}
-              )
+                $entry = [ordered]@{
+                  name = $Name
+                  status = $Status
+                  detail = $Detail
+                }
 
-              $entry = [ordered]@{
-                name = $Name
-                status = $Status
-                detail = $Detail
+                foreach ($property in $Properties.GetEnumerator()) {
+                  $entry[$property.Key] = $property.Value
+                }
+
+                $script:checks += [pscustomobject]$entry
               }
 
-              foreach ($property in $Properties.GetEnumerator()) {
-                $entry[$property.Key] = $property.Value
+              Add-ReportCheck -Name 'GraphContext' -Status 'success' -Detail 'Certificate-based Microsoft Graph context was established.' -Properties @{ tenantId = $tenantId; clientId = $clientId; thumbprint = $thumbprint }
+
+              try {
+                $sampleUsers = @(Get-MgUser -Top 5 -Select UserPrincipalName, Id, AccountEnabled -ErrorAction Stop)
+                Add-ReportCheck -Name 'Users' -Status 'success' -Detail 'Queried a sample of user objects from Microsoft Graph.' -Properties @{ count = $sampleUsers.Count }
+              }
+              catch {
+                Add-ReportCheck -Name 'Users' -Status 'warning' -Detail $_.Exception.Message -Properties @{ count = 0 }
               }
 
-              $script:checks += [pscustomobject]$entry
-            }
+              try {
+                $caPolicies = @(Get-MgConditionalAccessPolicy -Top 10 -ErrorAction Stop)
+                Add-ReportCheck -Name 'ConditionalAccessPolicies' -Status 'success' -Detail 'Queried Microsoft Entra conditional access policies.' -Properties @{ count = $caPolicies.Count }
+              }
+              catch {
+                Add-ReportCheck -Name 'ConditionalAccessPolicies' -Status 'warning' -Detail $_.Exception.Message -Properties @{ count = 0 }
+              }
 
-            Add-ReportCheck -Name 'GraphContext' -Status 'success' -Detail 'Certificate-based Microsoft Graph context was established.' -Properties @{ tenantId = $tenantId; clientId = $clientId; thumbprint = $thumbprint }
+              try {
+                $securityDefaults = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy -ErrorAction Stop
+                Add-ReportCheck -Name 'SecurityDefaults' -Status 'success' -Detail 'Security defaults state was queried successfully.' -Properties @{ isEnabled = $securityDefaults.IsEnabled }
+              }
+              catch {
+                Add-ReportCheck -Name 'SecurityDefaults' -Status 'warning' -Detail $_.Exception.Message -Properties @{ isEnabled = $false }
+              }
 
-            try {
-              $sampleUsers = @(Get-MgUser -Top 5 -Select UserPrincipalName, Id, AccountEnabled -ErrorAction Stop)
-              Add-ReportCheck -Name 'Users' -Status 'success' -Detail 'Queried a sample of user objects from Microsoft Graph.' -Properties @{ count = $sampleUsers.Count }
-            }
-            catch {
-              Add-ReportCheck -Name 'Users' -Status 'warning' -Detail $_.Exception.Message -Properties @{ count = 0 }
-            }
+              $report = [ordered]@{
+                generatedAt = (Get-Date).ToString('o')
+                source = 'GitHub-hosted headless runner'
+                reportType = 'custom-zero-trust-assessment'
+                pillar = $env:ZT_PILLAR
+                days = $days
+                tenantId = $tenantId
+                clientId = $clientId
+                authenticationMode = 'certificate'
+                checks = $checks
+              }
 
-            try {
-              $caPolicies = @(Get-MgConditionalAccessPolicy -Top 10 -ErrorAction Stop)
-              Add-ReportCheck -Name 'ConditionalAccessPolicies' -Status 'success' -Detail 'Queried Microsoft Entra conditional access policies.' -Properties @{ count = $caPolicies.Count }
-            }
-            catch {
-              Add-ReportCheck -Name 'ConditionalAccessPolicies' -Status 'warning' -Detail $_.Exception.Message -Properties @{ count = 0 }
-            }
+              $report | ConvertTo-Json -Depth 8 | Set-Content -Path $customReportPath -Encoding UTF8
 
-            try {
-              $securityDefaults = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy -ErrorAction Stop
-              Add-ReportCheck -Name 'SecurityDefaults' -Status 'success' -Detail 'Security defaults state was queried successfully.' -Properties @{ isEnabled = $securityDefaults.IsEnabled }
-            }
-            catch {
-              Add-ReportCheck -Name 'SecurityDefaults' -Status 'warning' -Detail $_.Exception.Message -Properties @{ isEnabled = $false }
-            }
+              $htmlRows = @()
+              foreach ($check in $checks) {
+                $statusColor = if ($check.status -eq 'success') { 'green' } elseif ($check.status -eq 'warning') { 'orange' } else { 'red' }
+                $htmlRows += @(
+                  '              <tr>',
+                  "                <td>$($check.name)</td>",
+                  "                <td><span style=\"color:$statusColor;font-weight:bold;\">$($check.status)</span></td>",
+                  "                <td>$($check.detail)</td>",
+                  '              </tr>'
+                )
+              }
 
-            $report = [ordered]@{
-              generatedAt = (Get-Date).ToString('o')
-              source = 'GitHub-hosted headless runner'
-              reportType = 'custom-zero-trust-assessment'
-              pillar = $env:ZT_PILLAR
-              days = $days
-              tenantId = $tenantId
-              clientId = $clientId
-              authenticationMode = 'certificate'
-              checks = $checks
-            }
-
-            $report | ConvertTo-Json -Depth 8 | Set-Content -Path $customReportPath -Encoding UTF8
-
-            $htmlRows = @()
-            foreach ($check in $checks) {
-              $statusColor = if ($check.status -eq 'success') { 'green' } elseif ($check.status -eq 'warning') { 'orange' } else { 'red' }
-              $htmlRows += @(
-                '              <tr>',
-                "                <td>$($check.name)</td>",
-                "                <td><span style=\"color:$statusColor;font-weight:bold;\">$($check.status)</span></td>",
-                "                <td>$($check.detail)</td>",
-                '              </tr>'
+              $htmlLines = @(
+                '<html>',
+                '<head>',
+                '  <title>Zero Trust Assessment Summary</title>',
+                '  <style>',
+                '    body { font-family: Segoe UI, Arial, sans-serif; margin: 32px; color: #1f2937; }',
+                '    h1 { color: #111827; }',
+                '    table { border-collapse: collapse; width: 100%; margin-top: 20px; }',
+                '    th, td { border: 1px solid #d1d5db; padding: 10px 12px; text-align: left; vertical-align: top; }',
+                '    th { background: #f3f4f6; }',
+                '    .meta { margin-bottom: 16px; line-height: 1.7; }',
+                '  </style>',
+                '</head>',
+                '<body>',
+                '  <h1>Zero Trust Assessment Summary</h1>',
+                '  <div class="meta">',
+                "    <strong>Generated:</strong> $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))<br />",
+                '    <strong>Source:</strong> GitHub-hosted headless runner<br />',
+                "    <strong>Pillar:</strong> $($env:ZT_PILLAR)<br />",
+                "    <strong>Days:</strong> $days<br />",
+                "    <strong>Tenant:</strong> $tenantId<br />",
+                "    <strong>Client:</strong> $clientId",
+                '  </div>',
+                '  <table>',
+                '    <thead>',
+                '      <tr>',
+                '        <th>Name</th>',
+                '        <th>Status</th>',
+                '        <th>Detail</th>',
+                '      </tr>',
+                '    </thead>',
+                '    <tbody>',
+                $htmlRows,
+                '    </tbody>',
+                '  </table>',
+                '</body>',
+                '</html>'
               )
+
+              $htmlLines | Set-Content -Path $htmlReportPath -Encoding UTF8
+
+              Write-Host "Custom headless Zero Trust report was generated at $customReportPath"
+              Write-Host "HTML summary report was generated at $htmlReportPath"
+              Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
             }
+            catch {
+              $message = $_.Exception.Message
+              $blockedFile = Join-Path $reportPath 'ZeroTrustAssessment-blocked.txt'
+              @(
+                'Zero Trust Assessment could not complete in this GitHub-hosted runner using the native module. A direct headless Graph report was attempted instead, but it failed.',
+                '',
+                "Timestamp: $(Get-Date -Format o)",
+                "TenantId: $tenantId",
+                "ClientId: $clientId",
+                "Thumbprint: $thumbprint",
+                '',
+                "Error: $message"
+              ) | Set-Content -Path $blockedFile -Encoding UTF8
 
-            $htmlLines = @(
-              '<html>',
-              '<head>',
-              '  <title>Zero Trust Assessment Summary</title>',
-              '  <style>',
-              '    body { font-family: Segoe UI, Arial, sans-serif; margin: 32px; color: #1f2937; }',
-              '    h1 { color: #111827; }',
-              '    table { border-collapse: collapse; width: 100%; margin-top: 20px; }',
-              '    th, td { border: 1px solid #d1d5db; padding: 10px 12px; text-align: left; vertical-align: top; }',
-              '    th { background: #f3f4f6; }',
-              '    .meta { margin-bottom: 16px; line-height: 1.7; }',
-              '  </style>',
-              '</head>',
-              '<body>',
-              '  <h1>Zero Trust Assessment Summary</h1>',
-              '  <div class="meta">',
-              "    <strong>Generated:</strong> $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))<br />",
-              '    <strong>Source:</strong> GitHub-hosted headless runner<br />',
-              "    <strong>Pillar:</strong> $($env:ZT_PILLAR)<br />",
-              "    <strong>Days:</strong> $days<br />",
-              "    <strong>Tenant:</strong> $tenantId<br />",
-              "    <strong>Client:</strong> $clientId",
-              '  </div>',
-              '  <table>',
-              '    <thead>',
-              '      <tr>',
-              '        <th>Name</th>',
-              '        <th>Status</th>',
-              '        <th>Detail</th>',
-              '      </tr>',
-              '    </thead>',
-              '    <tbody>',
-              $htmlRows,
-              '    </tbody>',
-              '  </table>',
-              '</body>',
-              '</html>'
-            )
-
-            $htmlLines | Set-Content -Path $htmlReportPath -Encoding UTF8
-
-            Write-Host "Custom headless Zero Trust report was generated at $customReportPath"
-            Write-Host "HTML summary report was generated at $htmlReportPath"
-            Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
-          }
-          catch {
-            $message = $_.Exception.Message
-            $blockedFile = Join-Path $reportPath 'ZeroTrustAssessment-blocked.txt'
-            @(
-              'Zero Trust Assessment could not complete in this GitHub-hosted runner using the native module. A direct headless Graph report was attempted instead, but it failed.',
-              '',
-              "Timestamp: $(Get-Date -Format o)",
-              "TenantId: $tenantId",
-              "ClientId: $clientId",
-              "Thumbprint: $thumbprint",
-              '',
-              "Error: $message"
-            ) | Set-Content -Path $blockedFile -Encoding UTF8
-
-            Write-Warning "Custom headless report failed; a blocked-status artifact was created instead. $message"
+              Write-Warning "Custom headless report failed; a blocked-status artifact was created instead. $message"
+            }
           }
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
