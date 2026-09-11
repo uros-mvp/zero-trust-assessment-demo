@@ -59,11 +59,9 @@ jobs:
 
           Import-Module Microsoft.PowerShell.PSResourceGet -Force -ErrorAction Stop
 
-          foreach ($moduleName in @('ZeroTrustAssessment', 'Microsoft.Graph.Authentication', 'ExchangeOnlineManagement')) {
-            if (-not (Get-Module -ListAvailable -Name $moduleName)) {
-              Install-PSResource -Name $moduleName -Scope CurrentUser -TrustRepository -Quiet -ErrorAction Stop
-            }
-          }
+          Install-PSResource -Name ZeroTrustAssessment -Scope CurrentUser -TrustRepository -Quiet -Reinstall -ErrorAction Stop
+          Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+          Install-PSResource -Name ExchangeOnlineManagement -Scope CurrentUser -TrustRepository -Quiet -Reinstall -ErrorAction Stop
 
       - name: Azure login with OIDC
         uses: azure/login@v2
@@ -203,12 +201,16 @@ jobs:
             foreach ($moduleName in @('ZeroTrustAssessment', 'Microsoft.Graph.Authentication', 'ExchangeOnlineManagement')) {
               try {
                 Import-Module $moduleName -Force -ErrorAction Stop
-                Write-Host "Imported module: $moduleName"
+                $module = Get-Module $moduleName
+                Write-Host "Imported module: $moduleName $($module.Version)"
               }
               catch {
                 Write-Warning "Failed to import $($moduleName): $($_.Exception.Message)"
               }
             }
+
+            Write-Host "Connect-ZtAssessment available: $([bool](Get-Command Connect-ZtAssessment -ErrorAction SilentlyContinue))"
+            Write-Host "Invoke-ZtAssessment available: $([bool](Get-Command Invoke-ZtAssessment -ErrorAction SilentlyContinue))"
 
             $graphContext = $null
             try {
@@ -236,12 +238,27 @@ jobs:
             try {
               Connect-ZtAssessment -TenantId $tenantId -ClientId $clientId -Certificate $cert -Environment Global -Service $supportedServices -Force -ErrorAction Stop
               Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
-              Write-Host 'Native Zero Trust Assessment report completed.'
+              $nativeReport = Get-ChildItem -Path $reportPath -Recurse -Filter 'ZeroTrustAssessmentReport.html' | Select-Object -First 1
+              if (-not $nativeReport) {
+                throw 'Invoke-ZtAssessment completed without generating ZeroTrustAssessmentReport.html.'
+              }
+
+              Write-Host "Native Zero Trust Assessment report completed: $($nativeReport.FullName)"
               Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
               return
             }
             catch {
-              Write-Warning "Native Zero Trust Assessment was not available in this headless runner: $($_.Exception.Message). Continuing with the direct Graph report fallback."
+              $nativeError = $_.Exception.ToString()
+              $nativeErrorPath = Join-Path $reportPath 'ZeroTrustAssessment-native-error.txt'
+              @(
+                'The Microsoft Zero Trust Assessment did not produce its native report.',
+                '',
+                "Timestamp: $(Get-Date -Format o)",
+                "TenantId: $tenantId",
+                "ClientId: $clientId",
+                "Error: $nativeError"
+              ) | Set-Content -Path $nativeErrorPath -Encoding UTF8
+              throw "Native Zero Trust Assessment failed. The custom Graph fallback is intentionally disabled because it is not the Microsoft assessment report. See $nativeErrorPath"
             }
 
             Write-Host 'Attempting Exchange Online certificate authentication without browser interaction.'
@@ -350,6 +367,7 @@ jobs:
           catch {
             $message = $_.Exception.Message
             Write-BlockedReport -Reason 'Zero Trust Assessment could not start correctly in this GitHub-hosted runner.' -TenantId $tenantId -ClientId $clientId -Thumbprint $thumbprint -Extra "Error: $message"
+            throw
           }
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
