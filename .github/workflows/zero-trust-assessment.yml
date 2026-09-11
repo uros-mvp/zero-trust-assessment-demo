@@ -231,12 +231,10 @@ jobs:
 
             Write-Host "Graph context established for tenant $($graphContext.TenantId)."
 
-            $supportedServices = @('Graph', 'Azure')
-            Write-Host "Running the GitHub-hosted app-only assessment against the currently supported services: $($supportedServices -join ', ')"
-            Write-Host 'Exchange Online, SharePoint Online, Security & Compliance, and Azure Information Protection may require additional tenant-specific app authorization or a different authentication model for this environment.'
+            Write-Host 'Running the native assessment. The module will skip services that are unavailable in this tenant and continue with the remaining tests.'
 
             try {
-              Connect-ZtAssessment -TenantId $tenantId -ClientId $clientId -Certificate $cert -Environment Global -Service $supportedServices -Force -ErrorAction Continue
+              Connect-ZtAssessment -TenantId $tenantId -ClientId $clientId -Certificate $cert -Environment Global -Force -ErrorAction Continue
               Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
               $nativeReport = Get-ChildItem -Path $reportPath -Recurse -Filter 'ZeroTrustAssessmentReport.html' | Select-Object -First 1
               if (-not $nativeReport) {
