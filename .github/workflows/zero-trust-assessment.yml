@@ -165,13 +165,14 @@ jobs:
             )
 
             $blockedFile = Join-Path $reportPath 'ZeroTrustAssessment-blocked.txt'
+            $thumbprintLine = if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) { "Thumbprint: $Thumbprint" } else { $null }
             @(
               $Reason,
               '',
               "Timestamp: $(Get-Date -Format o)",
               "TenantId: $TenantId",
               "ClientId: $ClientId",
-              if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) { "Thumbprint: $Thumbprint" } else { $null },
+              $thumbprintLine,
               '',
               $Extra
             ) | Where-Object { $_ -ne $null } | Set-Content -Path $blockedFile -Encoding UTF8
@@ -318,58 +319,9 @@ jobs:
 
               $report | ConvertTo-Json -Depth 8 | Set-Content -Path $customReportPath -Encoding UTF8
 
-              $htmlRows = @()
-              foreach ($check in $checks) {
-                $statusColor = if ($check.status -eq 'success') { 'green' } elseif ($check.status -eq 'warning') { 'orange' } else { 'red' }
-                $htmlRows += @(
-                  '              <tr>',
-                  "                <td>$($check.name)</td>",
-                  "                <td><span style=`"color:$statusColor;font-weight:bold;`">$($check.status)</span></td>",
-                  "                <td>$($check.detail)</td>",
-                  '              </tr>'
-                )
-              }
-
-              $htmlLines = @(
-                '<html>',
-                '<head>',
-                '  <title>Zero Trust Assessment Summary</title>',
-                '  <style>',
-                '    body { font-family: Segoe UI, Arial, sans-serif; margin: 32px; color: #1f2937; }',
-                '    h1 { color: #111827; }',
-                '    table { border-collapse: collapse; width: 100%; margin-top: 20px; }',
-                '    th, td { border: 1px solid #d1d5db; padding: 10px 12px; text-align: left; vertical-align: top; }',
-                '    th { background: #f3f4f6; }',
-                '    .meta { margin-bottom: 16px; line-height: 1.7; }',
-                '  </style>',
-                '</head>',
-                '<body>',
-                '  <h1>Zero Trust Assessment Summary</h1>',
-                '  <div class="meta">',
-                "    <strong>Generated:</strong> $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))<br />",
-                '    <strong>Source:</strong> GitHub-hosted headless runner<br />',
-                "    <strong>Pillar:</strong> $($env:ZT_PILLAR)<br />",
-                "    <strong>Days:</strong> $days<br />",
-                "    <strong>Tenant:</strong> $tenantId<br />",
-                "    <strong>Client:</strong> $clientId",
-                '  </div>',
-                '  <table>',
-                '    <thead>',
-                '      <tr>',
-                '        <th>Name</th>',
-                '        <th>Status</th>',
-                '        <th>Detail</th>',
-                '      </tr>',
-                '    </thead>',
-                '    <tbody>',
-                $htmlRows,
-                '    </tbody>',
-                '  </table>',
-                '</body>',
-                '</html>'
-              )
-
-              $htmlLines | Set-Content -Path $htmlReportPath -Encoding UTF8
+              $htmlRows = $checks | Select-Object name, status, detail
+              $htmlBody = $htmlRows | ConvertTo-Html -Title 'Zero Trust Assessment Summary' -PreContent "<h1>Zero Trust Assessment Summary</h1><p>Generated: $(Get-Date -Format o)<br />Source: GitHub-hosted headless runner<br />Pillar: $($env:ZT_PILLAR)<br />Days: $days<br />Tenant: $tenantId<br />Client: $clientId</p>" | Out-String
+              $htmlBody | Set-Content -Path $htmlReportPath -Encoding UTF8
 
               Write-Host "Custom headless Zero Trust report was generated at $customReportPath"
               Write-Host "HTML summary report was generated at $htmlReportPath"
