@@ -231,10 +231,12 @@ jobs:
 
             Write-Host "Graph context established for tenant $($graphContext.TenantId)."
 
-            Write-Host 'Running the native assessment. The module will skip services that are unavailable in this tenant and continue with the remaining tests.'
+            $supportedServices = @('Graph', 'Azure')
+            Write-Host "Running the native assessment against supported app-only services: $($supportedServices -join ', ')"
+            Write-Host 'Exchange Online, SharePoint Online, Security & Compliance, and Azure Information Protection require separate tenant authorization and are excluded from this headless app-only run.'
 
             try {
-              Connect-ZtAssessment -TenantId $tenantId -ClientId $clientId -Certificate $cert -Environment Global -Force -ErrorAction Continue
+              Connect-ZtAssessment -TenantId $tenantId -ClientId $clientId -Certificate $cert -Environment Global -Service $supportedServices -Force -ErrorAction Continue
               Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
               $nativeReport = Get-ChildItem -Path $reportPath -Recurse -Filter 'ZeroTrustAssessmentReport.html' | Select-Object -First 1
               if (-not $nativeReport) {
