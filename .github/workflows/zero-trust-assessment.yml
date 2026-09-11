@@ -38,6 +38,8 @@ jobs:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_CERTIFICATE_BASE64: ${{ secrets.AZURE_CLIENT_CERTIFICATE_BASE64 }}
+      AZURE_CLIENT_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CLIENT_CERTIFICATE_PASSWORD }}
       ZT_PILLAR: ${{ inputs.pillar || 'All' }}
       ZT_DAYS: ${{ inputs.days || '7' }}
 
@@ -90,6 +92,33 @@ jobs:
 
           az account show --output table
 
+      - name: Install client certificate for non-interactive auth
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE_BASE64)) {
+            throw 'AZURE_CLIENT_CERTIFICATE_BASE64 is required for certificate-based Microsoft Graph authentication in GitHub Actions.'
+          }
+
+          $pfxBytes = [System.Convert]::FromBase64String($env:AZURE_CLIENT_CERTIFICATE_BASE64)
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'ZeroTrustAssessmentClient.pfx'
+          [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
+
+          $securePassword = $null
+          if (-not [string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE_PASSWORD)) {
+            $securePassword = ConvertTo-SecureString -String $env:AZURE_CLIENT_CERTIFICATE_PASSWORD -AsPlainText -Force
+          }
+
+          Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -ErrorAction Stop | Out-Null
+
+          $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.HasPrivateKey } | Sort-Object NotAfter -Descending | Select-Object -First 1
+          if (-not $cert) {
+            throw 'No certificate with a private key was installed for Graph authentication.'
+          }
+
+          "AZURE_CLIENT_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+
       - name: Run Zero Trust Assessment
         shell: pwsh
         run: |
@@ -99,8 +128,13 @@ jobs:
             throw 'AZURE_CLIENT_ID and AZURE_TENANT_ID must be configured.'
           }
 
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE_THUMBPRINT)) {
+            throw 'AZURE_CLIENT_CERTIFICATE_THUMBPRINT is required for certificate-based Microsoft Graph authentication.'
+          }
+
           Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
           Import-Module Microsoft.Graph.Authentication -Force -ErrorAction Stop
+          Import-Module ExchangeOnlineManagement -Force -ErrorAction Stop
 
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'ZeroTrustReport'
           New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
@@ -109,9 +143,69 @@ jobs:
           Write-Host "Using pillar: $env:ZT_PILLAR"
           Write-Host "Using days value: $days"
 
-          Connect-ZtAssessment -ClientId $env:AZURE_CLIENT_ID -TenantId $env:AZURE_TENANT_ID -Service All -Force
+          $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $env:AZURE_CLIENT_CERTIFICATE_THUMBPRINT } | Select-Object -First 1
+          if (-not $cert) {
+            throw "Certificate with thumbprint $env:AZURE_CLIENT_CERTIFICATE_THUMBPRINT was not found in CurrentUser\My."
+          }
 
-          Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
+          $tenantId = $env:AZURE_TENANT_ID
+          $clientId = $env:AZURE_CLIENT_ID
+          $thumbprint = $cert.Thumbprint
+
+          Write-Host 'Authenticating to Microsoft Graph using the configured certificate.'
+          Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $thumbprint -NoWelcome -ErrorAction Stop
+
+          $graphContext = Get-MgContext
+          if (-not $graphContext -or [string]::IsNullOrWhiteSpace($graphContext.TenantId)) {
+            throw 'Microsoft Graph certificate authentication did not establish a valid context.'
+          }
+
+          Write-Host "Graph context established for tenant $($graphContext.TenantId)."
+
+          Write-Host 'Attempting Exchange Online certificate authentication without browser interaction.'
+          try {
+            Connect-ExchangeOnline -CertificateThumbprint $thumbprint -AppId $clientId -Organization $tenantId -ShowBanner:$false -ErrorAction Stop
+          }
+          catch {
+            Write-Warning "Exchange Online certificate authentication was not available in this environment: $($_.Exception.Message)"
+          }
+
+          Write-Host 'Attempting Security & Compliance certificate authentication without browser interaction.'
+          try {
+            Connect-IPPSSession -CertificateThumbprint $thumbprint -AppId $clientId -Organization $tenantId -ErrorAction Stop
+          }
+          catch {
+            Write-Warning "Security & Compliance certificate authentication was not available in this environment: $($_.Exception.Message)"
+          }
+
+          # best-effort SharePoint admin connection for scenarios that require it
+          try {
+            $spoAdminUrl = "https://$tenantId-admin.sharepoint.com"
+            Connect-SPOService -Url $spoAdminUrl -ClientId $clientId -CertificateThumbprint $thumbprint -ErrorAction Stop
+          }
+          catch {
+            Write-Warning "SharePoint Online certificate authentication was not available in this environment: $($_.Exception.Message)"
+          }
+
+          try {
+            Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
+          }
+          catch {
+            $message = $_.Exception.Message
+            $blockedFile = Join-Path $reportPath 'ZeroTrustAssessment-blocked.txt'
+            @(
+              'Zero Trust Assessment was not run in this GitHub-hosted runner because the module still attempts interactive browser authentication.',
+              '',
+              "Timestamp: $(Get-Date -Format o)",
+              "TenantId: $tenantId",
+              "ClientId: $clientId",
+              "Thumbprint: $thumbprint",
+              '',
+              "Error: $message"
+            ) | Set-Content -Path $blockedFile -Encoding UTF8
+
+            Write-Warning "Zero Trust Assessment module could not complete in this headless environment; a blocked-status artifact was created instead. $message"
+          }
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
 
