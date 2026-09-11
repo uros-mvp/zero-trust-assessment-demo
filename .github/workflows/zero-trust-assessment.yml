@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   run-zero-trust-assessment:
@@ -37,8 +38,6 @@ jobs:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      AZURE_CLIENT_CERTIFICATE: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
-      AZURE_CLIENT_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CLIENT_CERTIFICATE_PASSWORD }}
       ZT_PILLAR: ${{ inputs.pillar || 'All' }}
       ZT_DAYS: ${{ inputs.days || '7' }}
 
@@ -64,48 +63,15 @@ jobs:
             }
           }
 
-      - name: Install client certificate for app-only auth
-        if: ${{ env.AZURE_CLIENT_CERTIFICATE != '' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE)) {
-            throw 'AZURE_CLIENT_CERTIFICATE is empty.'
-          }
-
-          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE_PASSWORD)) {
-            throw 'AZURE_CLIENT_CERTIFICATE_PASSWORD is empty.'
-          }
-
-          $pfxPath = Join-Path $env:RUNNER_TEMP 'zt-assessment.pfx'
-          [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:AZURE_CLIENT_CERTIFICATE))
-
-          Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation 'Cert:\CurrentUser\My' -Password (ConvertTo-SecureString -String $env:AZURE_CLIENT_CERTIFICATE_PASSWORD -AsPlainText -Force) | Out-Null
-
-          $cert = Get-ChildItem Cert:\CurrentUser\My |
-            Where-Object { $_.Subject -match 'ZeroTrustAssessment' } |
-            Sort-Object NotBefore -Descending |
-            Select-Object -First 1
-
-          if (-not $cert) {
-            throw "No certificate matching 'ZeroTrustAssessment' was found in CurrentUser\My after import."
-          }
-
-          "ZT_CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
-          $cert | Select-Object Subject, Thumbprint | Format-Table -AutoSize
-
-      - name: Azure login using certificate
-        if: ${{ env.AZURE_CLIENT_CERTIFICATE != '' }}
+      - name: Azure login with OIDC
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          certificate: ${{ secrets.AZURE_CLIENT_CERTIFICATE }}
           enable-AzPSSession: true
 
-      - name: Validate app auth configuration
+      - name: Validate Azure authentication
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -118,18 +84,9 @@ jobs:
             throw 'AZURE_TENANT_ID is required.'
           }
 
-          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE)) {
-            throw 'AZURE_CLIENT_CERTIFICATE is required for app-only auth.'
-          }
-
-          if ([string]::IsNullOrWhiteSpace($env:ZT_CERT_THUMBPRINT)) {
-            throw 'Certificate was not installed correctly; ZT_CERT_THUMBPRINT is missing.'
-          }
-
-          Write-Host 'Using certificate-based app-only auth for Zero Trust Assessment.'
+          Write-Host 'Using OIDC federated authentication for Zero Trust Assessment.'
           Write-Host "TenantId=$env:AZURE_TENANT_ID"
           Write-Host "ClientId=$env:AZURE_CLIENT_ID"
-          Write-Host "CertificateThumbprint=$env:ZT_CERT_THUMBPRINT"
 
           az account show --output table
 
@@ -142,10 +99,6 @@ jobs:
             throw 'AZURE_CLIENT_ID and AZURE_TENANT_ID must be configured.'
           }
 
-          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE)) {
-            throw 'Certificate-based app-only auth is required for ZeroTrustAssessment. Set AZURE_CLIENT_CERTIFICATE and AZURE_CLIENT_CERTIFICATE_PASSWORD in repository secrets.'
-          }
-
           Import-Module ZeroTrustAssessment -Force -ErrorAction Stop
           Import-Module Microsoft.Graph.Authentication -Force -ErrorAction Stop
 
@@ -155,11 +108,8 @@ jobs:
           $days = [int]$env:ZT_DAYS
           Write-Host "Using pillar: $env:ZT_PILLAR"
           Write-Host "Using days value: $days"
-          Write-Host "Using certificate-thumbprint: $env:ZT_CERT_THUMBPRINT"
 
-          $certSelector = if ($env:ZT_CERT_THUMBPRINT) { $env:ZT_CERT_THUMBPRINT } else { 'CN=ZeroTrustAssessment' }
-          Write-Host "Connecting ZT Assessment using certificate selector: $certSelector"
-          Connect-ZtAssessment -ClientId $env:AZURE_CLIENT_ID -TenantId $env:AZURE_TENANT_ID -Certificate $certSelector -Service All -Force
+          Connect-ZtAssessment -ClientId $env:AZURE_CLIENT_ID -TenantId $env:AZURE_TENANT_ID -Service All -Force
 
           Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
 
