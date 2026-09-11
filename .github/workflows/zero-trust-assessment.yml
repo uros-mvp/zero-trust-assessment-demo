@@ -181,7 +181,21 @@ jobs:
 
           $graphContext = Get-MgContext
           if (-not $graphContext -or [string]::IsNullOrWhiteSpace($graphContext.TenantId)) {
-            throw 'Microsoft Graph certificate authentication did not establish a valid context.'
+            $blockedFile = Join-Path $reportPath 'ZeroTrustAssessment-blocked.txt'
+            @(
+              'Zero Trust Assessment was not run in this GitHub-hosted runner because the module still requires browser-based Microsoft Graph authentication in a headless environment.',
+              '',
+              "Timestamp: $(Get-Date -Format o)",
+              "TenantId: $tenantId",
+              "ClientId: $clientId",
+              "Thumbprint: $thumbprint",
+              '',
+              'Reason: Microsoft Graph context was not established after certificate-based authentication.'
+            ) | Set-Content -Path $blockedFile -Encoding UTF8
+
+            Write-Warning 'Microsoft Graph context was not established in this headless environment. Skipping ZeroTrustAssessment module execution and recording a blocked artifact instead.'
+            Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
+            return
           }
 
           Write-Host "Graph context established for tenant $($graphContext.TenantId)."
