@@ -101,13 +101,36 @@ jobs:
             throw 'AZURE_CLIENT_CERTIFICATE_BASE64 is required for certificate-based Microsoft Graph authentication in GitHub Actions.'
           }
 
-          $pfxBytes = [System.Convert]::FromBase64String($env:AZURE_CLIENT_CERTIFICATE_BASE64)
+          try {
+            $pfxBytes = [System.Convert]::FromBase64String($env:AZURE_CLIENT_CERTIFICATE_BASE64)
+          }
+          catch {
+            throw "AZURE_CLIENT_CERTIFICATE_BASE64 is not valid Base64. Ensure the secret is exported as a valid PFX and not a CER file. $($_.Exception.Message)"
+          }
+
+          if ($pfxBytes.Length -eq 0) {
+            throw 'AZURE_CLIENT_CERTIFICATE_BASE64 decoded to zero bytes. The secret is empty or invalid.'
+          }
+
           $pfxPath = Join-Path $env:RUNNER_TEMP 'ZeroTrustAssessmentClient.pfx'
           [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
 
           $securePassword = $null
+          $passwordText = $null
           if (-not [string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_CERTIFICATE_PASSWORD)) {
-            $securePassword = ConvertTo-SecureString -String $env:AZURE_CLIENT_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $passwordText = $env:AZURE_CLIENT_CERTIFICATE_PASSWORD
+            $securePassword = ConvertTo-SecureString -String $passwordText -AsPlainText -Force
+          }
+
+          try {
+            $validationCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+            $validationCert.Import($pfxBytes, $passwordText, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+            if (-not $validationCert.HasPrivateKey) {
+              throw 'The imported certificate does not contain a private key.'
+            }
+          }
+          catch {
+            throw "The certificate in AZURE_CLIENT_CERTIFICATE_BASE64 is not a valid PFX with a private key, or AZURE_CLIENT_CERTIFICATE_PASSWORD is wrong. $($_.Exception.Message)"
           }
 
           Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -ErrorAction Stop | Out-Null
@@ -117,6 +140,7 @@ jobs:
             throw 'No certificate with a private key was installed for Graph authentication.'
           }
 
+          Write-Host "Installed certificate thumbprint: $($cert.Thumbprint)"
           "AZURE_CLIENT_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
 
       - name: Run Zero Trust Assessment
