@@ -123,8 +123,8 @@ jobs:
           }
 
           try {
-            $validationCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-            $validationCert.Import($pfxBytes, $passwordText, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+            $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+            $validationCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, $passwordText, $keyFlags)
             if (-not $validationCert.HasPrivateKey) {
               throw 'The imported certificate does not contain a private key.'
             }
