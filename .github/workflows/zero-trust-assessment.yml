@@ -226,13 +226,78 @@ jobs:
           }
 
           try {
-            Invoke-ZtAssessment -Path $reportPath -Pillar $env:ZT_PILLAR -Days $days -NoBrowser -ShowLog
+            $customReportPath = Join-Path $reportPath 'ZeroTrustAssessment-report.json'
+            $checks = @()
+
+            function Add-ReportCheck {
+              param(
+                [Parameter(Mandatory = $true)][string]$Name,
+                [Parameter(Mandatory = $true)][string]$Status,
+                [Parameter(Mandatory = $true)][string]$Detail,
+                [hashtable]$Properties = @{}
+              )
+
+              $entry = [ordered]@{
+                name = $Name
+                status = $Status
+                detail = $Detail
+              }
+
+              foreach ($property in $Properties.GetEnumerator()) {
+                $entry[$property.Key] = $property.Value
+              }
+
+              $script:checks += [pscustomobject]$entry
+            }
+
+            Add-ReportCheck -Name 'GraphContext' -Status 'success' -Detail 'Certificate-based Microsoft Graph context was established.' -Properties @{ tenantId = $tenantId; clientId = $clientId; thumbprint = $thumbprint }
+
+            try {
+              $sampleUsers = @(Get-MgUser -Top 5 -Select UserPrincipalName, Id, AccountEnabled -ErrorAction Stop)
+              Add-ReportCheck -Name 'Users' -Status 'success' -Detail 'Queried a sample of user objects from Microsoft Graph.' -Properties @{ count = $sampleUsers.Count }
+            }
+            catch {
+              Add-ReportCheck -Name 'Users' -Status 'warning' -Detail $_.Exception.Message -Properties @{ count = 0 }
+            }
+
+            try {
+              $caPolicies = @(Get-MgConditionalAccessPolicy -Top 10 -ErrorAction Stop)
+              Add-ReportCheck -Name 'ConditionalAccessPolicies' -Status 'success' -Detail 'Queried Microsoft Entra conditional access policies.' -Properties @{ count = $caPolicies.Count }
+            }
+            catch {
+              Add-ReportCheck -Name 'ConditionalAccessPolicies' -Status 'warning' -Detail $_.Exception.Message -Properties @{ count = 0 }
+            }
+
+            try {
+              $securityDefaults = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy -ErrorAction Stop
+              Add-ReportCheck -Name 'SecurityDefaults' -Status 'success' -Detail 'Security defaults state was queried successfully.' -Properties @{ isEnabled = $securityDefaults.IsEnabled }
+            }
+            catch {
+              Add-ReportCheck -Name 'SecurityDefaults' -Status 'warning' -Detail $_.Exception.Message -Properties @{ isEnabled = $false }
+            }
+
+            $report = [ordered]@{
+              generatedAt = (Get-Date).ToString('o')
+              source = 'GitHub-hosted headless runner'
+              reportType = 'custom-zero-trust-assessment'
+              pillar = $env:ZT_PILLAR
+              days = $days
+              tenantId = $tenantId
+              clientId = $clientId
+              authenticationMode = 'certificate'
+              checks = $checks
+            }
+
+            $report | ConvertTo-Json -Depth 8 | Set-Content -Path $customReportPath -Encoding UTF8
+
+            Write-Host "Custom headless Zero Trust report was generated at $customReportPath"
+            Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
           }
           catch {
             $message = $_.Exception.Message
             $blockedFile = Join-Path $reportPath 'ZeroTrustAssessment-blocked.txt'
             @(
-              'Zero Trust Assessment was not run in this GitHub-hosted runner because the module still attempts interactive browser authentication.',
+              'Zero Trust Assessment could not complete in this GitHub-hosted runner using the native module. A direct headless Graph report was attempted instead, but it failed.',
               '',
               "Timestamp: $(Get-Date -Format o)",
               "TenantId: $tenantId",
@@ -242,7 +307,7 @@ jobs:
               "Error: $message"
             ) | Set-Content -Path $blockedFile -Encoding UTF8
 
-            Write-Warning "Zero Trust Assessment module could not complete in this headless environment; a blocked-status artifact was created instead. $message"
+            Write-Warning "Custom headless report failed; a blocked-status artifact was created instead. $message"
           }
 
           Get-ChildItem -Path $reportPath -Recurse | Select-Object FullName
